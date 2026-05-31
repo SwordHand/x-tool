@@ -1,5 +1,5 @@
 // ==UserScript==
-// @name         X 内容警告移除
+// @name         X 内容警告移除+视频下载
 // @namespace    https://github.com/SwordHand/x-tool
 // @version      1.5
 // @description  移除 X 敏感内容成人警告，支持解析并下载视频各种画质
