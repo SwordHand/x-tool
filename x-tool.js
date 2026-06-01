@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         X 内容警告移除+视频下载
-// @namespace    https://github.com/SwordHand/x-tool
-// @version      1.5
+// @name         X 内容警告移除
+// @namespace    https://github.com/SwordHand/x-tool/x-tool.js
+// @version      1.6
 // @description  移除 X 敏感内容成人警告，支持解析并下载视频各种画质
 // @author       SwordHand
 // @match        https://x.com/*
@@ -9,7 +9,6 @@
 // @run-at       document-start
 // @grant        GM_xmlhttpRequest
 // @grant        unsafeWindow
-// @connect      tweeload.aculix.net
 // @connect      video.twimg.com
 // @noframes
 // ==/UserScript==
@@ -18,6 +17,7 @@
     'use strict';
 
     const targetWindow = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
+    const videoCache = new Map();
 
     const style = document.createElement('style');
     style.textContent = `
@@ -64,7 +64,7 @@
         }
         .x-download-modal {
             background: #ffffff; border: 1px solid #cfd9de; color: #000000;
-            border-radius: 16px; width: 340px; padding: 20px;
+            border-radius: 16px; width: 360px; padding: 20px;
             box-shadow: 0 8px 30px rgba(0, 0, 0, 0.15);
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
         }
@@ -72,9 +72,16 @@
             margin: 0 0 16px 0; font-size: 18px; text-align: center; font-weight: bold;
             color: #000000;
         }
+        .x-download-modal-scroll {
+            max-height: 350px; overflow-y: auto; padding-right: 4px;
+        }
+        .x-download-video-section-title {
+            font-size: 13px; font-weight: bold; color: #536471; margin: 12px 0 6px 0;
+            padding-left: 2px;
+        }
         .x-download-option-btn {
             background: #f7f9f9; border: 1px solid #cfd9de; color: #000000;
-            border-radius: 8px; padding: 12px; margin-bottom: 8px;
+            border-radius: 8px; padding: 10px 12px; margin-bottom: 6px;
             cursor: pointer; text-align: left; width: 100%;
             transition: background 0.2s; display: flex; justify-content: space-between; align-items: center;
             box-sizing: border-box;
@@ -83,10 +90,10 @@
             background: #eff1f1;
         }
         .x-download-option-res {
-            font-weight: bold; color: #000000; font-size: 15px;
+            font-weight: bold; color: #000000; font-size: 14px;
         }
         .x-download-option-bitrate {
-            color: #000000; font-size: 13px; opacity: 0.7;
+            color: #000000; font-size: 12px; opacity: 0.7;
         }
         .x-download-modal-close {
             background: #000000; color: #ffffff; border: none;
@@ -109,15 +116,43 @@
 
     let status = 'ok';
 
+    function extractVideoInfo(obj) {
+        if (!obj || typeof obj !== 'object') return;
+
+        if (obj.legacy && obj.legacy.id_str && obj.legacy.extended_entities && obj.legacy.extended_entities.media) {
+            const tweetId = obj.legacy.id_str;
+            const collectedVideos = [];
+            let videoIndex = 1;
+
+            obj.legacy.extended_entities.media.forEach(mediaItem => {
+                if (mediaItem.type === 'video' && mediaItem.video_info && mediaItem.video_info.variants) {
+                    const mp4Variants = mediaItem.video_info.variants.filter(v => v.content_type === 'video/mp4' && v.bitrate);
+                    if (mp4Variants.length > 0) {
+                        collectedVideos.push({
+                            index: videoIndex++,
+                            variants: mp4Variants
+                        });
+                    }
+                }
+            });
+
+            if (collectedVideos.length > 0) {
+                videoCache.set(tweetId, collectedVideos);
+            }
+        }
+
+        for (let key in obj) {
+            if (obj.hasOwnProperty(key) && typeof obj[key] === 'object') {
+                extractVideoInfo(obj[key]);
+            }
+        }
+    }
+
     function deepClean(obj) {
         if (!obj || typeof obj !== 'object') return obj;
 
-        if (obj.mediaVisibilityResults) {
-            delete obj.mediaVisibilityResults;
-        }
-        if (obj.limitedActionResults) {
-            delete obj.limitedActionResults;
-        }
+        if (obj.mediaVisibilityResults) delete obj.mediaVisibilityResults;
+        if (obj.limitedActionResults) delete obj.limitedActionResults;
 
         if (obj.tweet && typeof obj.tweet === 'object') {
             if (obj.tweet.possibly_sensitive !== undefined) {
@@ -144,6 +179,7 @@
             result = originalParse.apply(this, arguments);
 
             if (result && typeof result === 'object') {
+                extractVideoInfo(result);
                 deepClean(result);
             }
         } catch (e) {
@@ -155,7 +191,7 @@
         return result;
     };
 
-    function showQualityDialog(videoUrls, tweetId) {
+    function showQualityDialog(videoList, tweetId) {
         const overlay = document.createElement('div');
         overlay.className = 'x-download-modal-overlay';
 
@@ -167,29 +203,43 @@
         title.textContent = '选择视频下载画质';
         modal.appendChild(title);
 
-        const optionsContainer = document.createElement('div');
+        const scrollContainer = document.createElement('div');
+        scrollContainer.className = 'x-download-modal-scroll';
 
-        videoUrls.forEach((item) => {
-            const resMatch = item.url.match(/(\d+x\d+)/);
-            const resolution = resMatch ? resMatch[1] : '未知尺寸';
-            const bitrateMbps = item.bitrate ? (item.bitrate / 1000000).toFixed(2) + ' Mbps' : '未知比特率';
+        videoList.forEach((video) => {
+            if (videoList.length > 1) {
+                const sectionTitle = document.createElement('div');
+                sectionTitle.className = 'x-download-video-section-title';
+                sectionTitle.textContent = `视频集 - 序号 ${video.index}`;
+                scrollContainer.appendChild(sectionTitle);
+            }
 
-            const optBtn = document.createElement('button');
-            optBtn.className = 'x-download-option-btn';
-            optBtn.innerHTML = `
-                <span class="x-download-option-res">${resolution}</span>
-                <span class="x-download-option-bitrate">${bitrateMbps}</span>
-            `;
+            video.variants.forEach((item) => {
+                const resMatch = item.url.match(/(\d+x\d+)/);
+                const resolution = resMatch ? resMatch[1] : '未知尺寸';
+                const bitrateMbps = item.bitrate ? (item.bitrate / 1000000).toFixed(2) + ' Mbps' : '未知比特率';
 
-            optBtn.addEventListener('click', () => {
-                downloadVideo(item.url, `X_Video_${tweetId}_${resolution}.mp4`);
-                closeModal();
+                const optBtn = document.createElement('button');
+                optBtn.className = 'x-download-option-btn';
+                optBtn.innerHTML = `
+                    <span class="x-download-option-res">${resolution}</span>
+                    <span class="x-download-option-bitrate">${bitrateMbps}</span>
+                `;
+
+                optBtn.addEventListener('click', () => {
+                    const finalFilename = videoList.length > 1
+                        ? `X_Video_${tweetId}_Part${video.index}_${resolution}.mp4`
+                        : `X_Video_${tweetId}_${resolution}.mp4`;
+
+                    downloadVideo(item.url, finalFilename);
+                    closeModal();
+                });
+
+                scrollContainer.appendChild(optBtn);
             });
-
-            optionsContainer.appendChild(optBtn);
         });
 
-        modal.appendChild(optionsContainer);
+        modal.appendChild(scrollContainer);
 
         const closeBtn = document.createElement('button');
         closeBtn.className = 'x-download-modal-close';
@@ -252,7 +302,7 @@
         button.className = 'css-175oi2r r-1777fci r-bt1l66 r-bztko3 r-lrvibr r-1loqt21 r-1ny4l3l';
         button.type = 'button';
         button.setAttribute('aria-label', '下载视频');
-        button.title = '解析并下载视频';
+        button.title = '下载';
 
         const innerDiv = document.createElement('div');
         innerDiv.dir = 'ltr';
@@ -284,42 +334,12 @@
             }
             const tweetId = idMatch[1];
 
-            button.style.opacity = '0.5';
-            button.disabled = true;
-
-            GM_xmlhttpRequest({
-                method: 'GET',
-                url: `https://tweeload.aculix.net/status/${tweetId}.json`,
-                headers: {
-                    'Authorization': 'cKMQlY4jGCflOStlN3UfnWCxLQSb5GL7UPjPJ3jGS5fkno1Jaf'
-                },
-                onload: function (response) {
-                    try {
-                        if (response.status === 200) {
-                            const data = JSON.parse(response.responseText);
-                            const videoUrls = data?.tweet?.media?.videos?.[0]?.video_urls;
-
-                            if (data.code === 200 && videoUrls && videoUrls.length > 0) {
-                                showQualityDialog(videoUrls, tweetId);
-                            } else {
-                                alert('未解析到有效的视频下载地址或该接口不可用');
-                            }
-                        } else {
-                            alert(`请求失败，状态码: ${response.status}`);
-                        }
-                    } catch (error) {
-                        alert('解析服务器返回的数据时发生错误。');
-                    } finally {
-                        button.style.opacity = '1';
-                        button.disabled = false;
-                    }
-                },
-                onerror: function (error) {
-                    alert('网络请求发生错误，已被拦截或目标服务器故障。');
-                    button.style.opacity = '1';
-                    button.disabled = false;
-                }
-            });
+            const cachedVideoList = videoCache.get(tweetId);
+            if (cachedVideoList && cachedVideoList.length > 0) {
+                showQualityDialog(cachedVideoList, tweetId);
+            } else {
+                alert('未在本地缓存中匹配到视频数据。请尝试刷新页面以触发 API 拦截。');
+            }
         });
 
         actionBar.appendChild(btnContainer);
@@ -358,6 +378,7 @@
 
     dot.addEventListener('click', function () {
         alert('X 成人内容警告移除\n\n状态: ' +
-              (status === 'ok' ? '正常 ✅' : '异常 ❌'));
+              (status === 'ok' ? '正常 ✅' : '异常 ❌') +
+              `\n本地已解析缓存推文数: ${videoCache.size}`);
     });
 })();
