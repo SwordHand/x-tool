@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         X 内容警告移除
 // @namespace    https://github.com/SwordHand/x-tool/x-tool.js
-// @version      1.6
-// @description  移除 X 敏感内容成人警告，支持解析并下载视频各种画质
+// @version      2.3
+// @description  移除 X 敏感内容警告，支持本地下载视频、图片
 // @author       SwordHand
 // @match        https://x.com/*
 // @match        https://twitter.com/*
@@ -10,6 +10,7 @@
 // @grant        GM_xmlhttpRequest
 // @grant        unsafeWindow
 // @connect      video.twimg.com
+// @connect      pbs.twimg.com
 // @noframes
 // ==/UserScript==
 
@@ -17,7 +18,7 @@
     'use strict';
 
     const targetWindow = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
-    const videoCache = new Map();
+    const mediaCache = new Map();
 
     const style = document.createElement('style');
     style.textContent = `
@@ -93,16 +94,27 @@
             font-weight: bold; color: #000000; font-size: 14px;
         }
         .x-download-option-bitrate {
-            color: #000000; font-size: 12px; opacity: 0.7;
+            color: #000000; font-size: 13px; opacity: 0.7;
         }
-        .x-download-modal-close {
-            background: #000000; color: #ffffff; border: none;
-            border-radius: 9999px; padding: 12px 0; width: 100%;
-            font-weight: bold; cursor: pointer; margin-top: 12px; transition: background 0.2s;
+        .x-download-modal-actions {
+            display: flex; gap: 12px; margin-top: 12px; width: 100%; box-sizing: border-box;
+        }
+        .x-download-modal-close, .x-download-modal-all {
+            border: none; border-radius: 9999px; padding: 12px 0; flex: 1;
+            font-weight: bold; cursor: pointer; transition: background 0.2s;
             display: flex; justify-content: center; align-items: center; text-align: center;
             box-sizing: border-box;
         }
+        .x-download-modal-close {
+            background: #f7f9f9; color: #0f1419; border: 1px solid #cfd9de;
+        }
         .x-download-modal-close:hover {
+            background: #eff1f1;
+        }
+        .x-download-modal-all {
+            background: #000000; color: #ffffff;
+        }
+        .x-download-modal-all:hover {
             background: #272c30;
         }
     `;
@@ -116,34 +128,45 @@
 
     let status = 'ok';
 
-    function extractVideoInfo(obj) {
+    function extractMediaInfo(obj) {
         if (!obj || typeof obj !== 'object') return;
 
         if (obj.legacy && obj.legacy.id_str && obj.legacy.extended_entities && obj.legacy.extended_entities.media) {
             const tweetId = obj.legacy.id_str;
-            const collectedVideos = [];
+            const collectedMedia = [];
             let videoIndex = 1;
+            let photoIndex = 1;
 
             obj.legacy.extended_entities.media.forEach(mediaItem => {
                 if (mediaItem.type === 'video' && mediaItem.video_info && mediaItem.video_info.variants) {
                     const mp4Variants = mediaItem.video_info.variants.filter(v => v.content_type === 'video/mp4' && v.bitrate);
                     if (mp4Variants.length > 0) {
-                        collectedVideos.push({
+                        collectedMedia.push({
+                            type: 'video',
                             index: videoIndex++,
                             variants: mp4Variants
                         });
                     }
+                } else if (mediaItem.type === 'photo' && mediaItem.media_url_https) {
+                    const baseUrl = mediaItem.media_url_https;
+                    const origUrl = baseUrl.includes('?') ? `${baseUrl}&name=orig` : `${baseUrl}?name=orig`;
+                    collectedMedia.push({
+                        type: 'photo',
+                        index: photoIndex++,
+                        url: origUrl,
+                        originalInfo: mediaItem.original_info
+                    });
                 }
             });
 
-            if (collectedVideos.length > 0) {
-                videoCache.set(tweetId, collectedVideos);
+            if (collectedMedia.length > 0) {
+                mediaCache.set(tweetId, collectedMedia);
             }
         }
 
         for (let key in obj) {
             if (obj.hasOwnProperty(key) && typeof obj[key] === 'object') {
-                extractVideoInfo(obj[key]);
+                extractMediaInfo(obj[key]);
             }
         }
     }
@@ -179,7 +202,7 @@
             result = originalParse.apply(this, arguments);
 
             if (result && typeof result === 'object') {
-                extractVideoInfo(result);
+                extractMediaInfo(result);
                 deepClean(result);
             }
         } catch (e) {
@@ -191,7 +214,7 @@
         return result;
     };
 
-    function showQualityDialog(videoList, tweetId) {
+    function showQualityDialog(mediaList, tweetId) {
         const overlay = document.createElement('div');
         overlay.className = 'x-download-modal-overlay';
 
@@ -200,53 +223,104 @@
 
         const title = document.createElement('h3');
         title.className = 'x-download-modal-title';
-        title.textContent = '选择视频下载画质';
+        title.textContent = '选择下载媒体文件';
         modal.appendChild(title);
 
         const scrollContainer = document.createElement('div');
         scrollContainer.className = 'x-download-modal-scroll';
 
-        videoList.forEach((video) => {
-            if (videoList.length > 1) {
-                const sectionTitle = document.createElement('div');
-                sectionTitle.className = 'x-download-video-section-title';
-                sectionTitle.textContent = `视频集 - 序号 ${video.index}`;
-                scrollContainer.appendChild(sectionTitle);
-            }
+        mediaList.forEach((media) => {
+            if (media.type === 'video') {
+                if (mediaList.length > 1) {
+                    const sectionTitle = document.createElement('div');
+                    sectionTitle.className = 'x-download-video-section-title';
+                    sectionTitle.textContent = `视频集 - 序号 ${media.index}`;
+                    scrollContainer.appendChild(sectionTitle);
+                }
 
-            video.variants.forEach((item) => {
-                const resMatch = item.url.match(/(\d+x\d+)/);
-                const resolution = resMatch ? resMatch[1] : '未知尺寸';
-                const bitrateMbps = item.bitrate ? (item.bitrate / 1000000).toFixed(2) + ' Mbps' : '未知比特率';
+                media.variants.forEach((item) => {
+                    const resMatch = item.url.match(/(\d+x\d+)/);
+                    const resolution = resMatch ? resMatch[1] : '未知尺寸';
+                    const bitrateMbps = item.bitrate ? (item.bitrate / 1000000).toFixed(2) + ' Mbps' : '未知比特率';
+
+                    const optBtn = document.createElement('button');
+                    optBtn.className = 'x-download-option-btn';
+                    optBtn.innerHTML = `
+                        <span class="x-download-option-res">${resolution} (视频)</span>
+                        <span class="x-download-option-bitrate">${bitrateMbps}</span>
+                    `;
+
+                    optBtn.addEventListener('click', () => {
+                        const finalFilename = mediaList.length > 1
+                            ? `X_Video_${tweetId}_Part${media.index}_${resolution}.mp4`
+                            : `X_Video_${tweetId}_${resolution}.mp4`;
+
+                        downloadFile(item.url, finalFilename);
+                        closeModal();
+                    });
+
+                    scrollContainer.appendChild(optBtn);
+                });
+            } else if (media.type === 'photo') {
+                const width = media.originalInfo?.width || '原图';
+                const height = media.originalInfo?.height || '高清';
+                const ext = media.url.split('.').pop().split('?')[0] || 'jpg';
 
                 const optBtn = document.createElement('button');
                 optBtn.className = 'x-download-option-btn';
                 optBtn.innerHTML = `
-                    <span class="x-download-option-res">${resolution}</span>
-                    <span class="x-download-option-bitrate">${bitrateMbps}</span>
+                    <span class="x-download-option-res">图片 - 序号 ${media.index}</span>
+                    <span class="x-download-option-bitrate">${width} x ${height}</span>
                 `;
 
                 optBtn.addEventListener('click', () => {
-                    const finalFilename = videoList.length > 1
-                        ? `X_Video_${tweetId}_Part${video.index}_${resolution}.mp4`
-                        : `X_Video_${tweetId}_${resolution}.mp4`;
-
-                    downloadVideo(item.url, finalFilename);
+                    downloadFile(media.url, `X_Photo_${tweetId}_Part${media.index}.${ext}`);
                     closeModal();
                 });
 
                 scrollContainer.appendChild(optBtn);
-            });
+            }
         });
 
         modal.appendChild(scrollContainer);
+
+        const actionsContainer = document.createElement('div');
+        actionsContainer.className = 'x-download-modal-actions';
 
         const closeBtn = document.createElement('button');
         closeBtn.className = 'x-download-modal-close';
         closeBtn.textContent = '取消';
         closeBtn.addEventListener('click', closeModal);
-        modal.appendChild(closeBtn);
+        actionsContainer.appendChild(closeBtn);
 
+        if (mediaList.length > 1) {
+            const allBtn = document.createElement('button');
+            allBtn.className = 'x-download-modal-all';
+            allBtn.textContent = '全部下载';
+            allBtn.addEventListener('click', () => {
+                mediaList.forEach((media) => {
+                    if (media.type === 'video') {
+                        const bestVariant = media.variants.reduce((prev, current) => (prev.bitrate > current.bitrate) ? prev : current);
+                        const resMatch = bestVariant.url.match(/(\d+x\d+)/);
+                        const resolution = resMatch ? resMatch[1] : 'best';
+                        downloadFile(bestVariant.url, `X_Video_${tweetId}_Part${media.index}_${resolution}.mp4`);
+                    } else if (media.type === 'photo') {
+                        const ext = media.url.split('.').pop().split('?')[0] || 'jpg';
+                        downloadFile(media.url, `X_Photo_${tweetId}_Part${media.index}.${ext}`);
+                    }
+                });
+                closeModal();
+            });
+            actionsContainer.appendChild(allBtn);
+        } else {
+            closeBtn.style.background = '#000000';
+            closeBtn.style.color = '#ffffff';
+            closeBtn.style.border = 'none';
+            closeBtn.addEventListener('mouseenter', () => closeBtn.style.background = '#272c30');
+            closeBtn.addEventListener('mouseleave', () => closeBtn.style.background = '#000000');
+        }
+
+        modal.appendChild(actionsContainer);
         overlay.appendChild(modal);
         document.body.appendChild(overlay);
 
@@ -257,7 +331,7 @@
         }
     }
 
-    function downloadVideo(url, filename) {
+    function downloadFile(url, filename) {
         GM_xmlhttpRequest({
             method: 'GET',
             url: url,
@@ -294,15 +368,15 @@
         a.click();
     }
 
-    function addDownloadButton(actionBar, url) {
+    function addDownloadButton(actionBar, tweetId) {
         const btnContainer = document.createElement('div');
         btnContainer.className = 'css-175oi2r r-18u37iz r-1h0z5md r-13awgt0 x-subtitle-download-btn-container';
 
         const button = document.createElement('button');
         button.className = 'css-175oi2r r-1777fci r-bt1l66 r-bztko3 r-lrvibr r-1loqt21 r-1ny4l3l';
         button.type = 'button';
-        button.setAttribute('aria-label', '下载视频');
-        button.title = '下载';
+        button.setAttribute('aria-label', '下载媒体');
+        button.title = '本地解析并下载媒体';
 
         const innerDiv = document.createElement('div');
         innerDiv.dir = 'ltr';
@@ -327,18 +401,17 @@
             e.preventDefault();
             e.stopPropagation();
 
-            const idMatch = url.match(/status\/(\d+)/);
-            if (!idMatch) {
-                alert('解析推文 ID 失败！');
-                return;
-            }
-            const tweetId = idMatch[1];
-
-            const cachedVideoList = videoCache.get(tweetId);
-            if (cachedVideoList && cachedVideoList.length > 0) {
-                showQualityDialog(cachedVideoList, tweetId);
+            const cachedMediaList = mediaCache.get(tweetId);
+            if (cachedMediaList && cachedMediaList.length > 0) {
+                if (cachedMediaList.length === 1 && cachedMediaList[0].type === 'photo') {
+                    const media = cachedMediaList[0];
+                    const ext = media.url.split('.').pop().split('?')[0] || 'jpg';
+                    downloadFile(media.url, `X_Photo_${tweetId}.${ext}`);
+                } else {
+                    showQualityDialog(cachedMediaList, tweetId);
+                }
             } else {
-                alert('未在本地缓存中匹配到视频数据。请尝试刷新页面以触发 API 拦截。');
+                alert('未在本地缓存中匹配到该推文的媒体数据。请尝试刷新页面。');
             }
         });
 
@@ -346,24 +419,31 @@
     }
 
     function checkAndInjectSubtitleButtons() {
-        const videoComponents = document.querySelectorAll('[data-testid="videoComponent"][data-immersive-translate-ai-subtitle-url]');
+        const articles = document.querySelectorAll('article[role="article"]');
 
-        videoComponents.forEach(video => {
-            if (video.dataset.downloadBtnAdded) return;
-
-            const tweet = video.closest('article');
-            if (!tweet) return;
+        articles.forEach(tweet => {
+            if (tweet.dataset.downloadBtnAdded) return;
 
             const actionBar = tweet.querySelector('[role="group"]');
             if (!actionBar) return;
 
-            const url = video.getAttribute('data-immersive-translate-ai-subtitle-url');
+            const linkElement = tweet.querySelector('a[href*="/status/"]');
+            if (!linkElement) return;
 
-            if (!actionBar.querySelector('.x-subtitle-download-btn-container')) {
-                addDownloadButton(actionBar, url);
+            const pathMatch = linkElement.getAttribute('href').match(/\/status\/(\d+)/);
+            if (!pathMatch) return;
+
+            const tweetId = pathMatch[1];
+
+            const hasVideo = tweet.querySelector('[data-testid="videoComponent"]');
+            const hasPhoto = tweet.querySelector('[data-testid="tweetPhoto"]');
+
+            if (hasVideo || hasPhoto) {
+                if (!actionBar.querySelector('.x-subtitle-download-btn-container')) {
+                    addDownloadButton(actionBar, tweetId);
+                }
+                tweet.dataset.downloadBtnAdded = 'true';
             }
-
-            video.dataset.downloadBtnAdded = 'true';
         });
     }
 
@@ -379,6 +459,6 @@
     dot.addEventListener('click', function () {
         alert('X 成人内容警告移除\n\n状态: ' +
               (status === 'ok' ? '正常 ✅' : '异常 ❌') +
-              `\n本地已解析缓存推文数: ${videoCache.size}`);
+              `\n本地已解析缓存推文数: ${mediaCache.size}`);
     });
 })();
