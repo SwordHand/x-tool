@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         X 内容警告移除
-// @namespace    https://github.com/SwordHand/x-tool/x-tool.js
+// @namespace    https://github.com/SwordHand/x-tool
 // @version      2.3
 // @description  移除 X 敏感内容警告，支持本地下载视频、图片
 // @author       SwordHand
@@ -11,6 +11,8 @@
 // @grant        unsafeWindow
 // @connect      video.twimg.com
 // @connect      pbs.twimg.com
+// @updateURL    https://raw.githubusercontent.com/SwordHand/x-tool/main/x-tool.user.js
+// @downloadURL  https://raw.githubusercontent.com/SwordHand/x-tool/main/x-tool.user.js
 // @noframes
 // ==/UserScript==
 

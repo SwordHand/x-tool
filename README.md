@@ -17,9 +17,7 @@
    在浏览器中安装 [Tampermonkey (油猴)](https://www.tampermonkey.net/) 或其它兼容的脚本管理器。
 
 2. **添加脚本**：
-   - 打开油猴管理面板，选择“添加新脚本”。
-   - 将 `x-tool.js` 中的代码完全复制并粘贴进去。
-   - 保存脚本。
+   - [[点击安装脚本]](https://raw.githubusercontent.com/SwordHand/x-tool/main/x-tool.user.js)
 
 3. **开始使用**：
    刷新或打开 [x.com](https://x.com/)，即可享受无限制浏览与便捷的一键视频下载。
